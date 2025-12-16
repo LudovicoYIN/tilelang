@@ -15,11 +15,13 @@ using arith::IRVisitorWithAnalyzer;
 AtomicAddVectorizePlanner::AtomicAddVectorizePlanner() = default;
 
 AtomicAddVectorizePlanResult
-AtomicAddVectorizePlanner::Plan(const For &node, int compute_capability) {
+AtomicAddVectorizePlanner::Plan(const For &node, int compute_capability,
+                                Optional<Fragment> loop_layout) {
   int vectorize_size_max = 1;
   this->vector_size_ = 4;
   this->dynamic_ = false;
   this->condition_ = PrimExpr();
+  this->loop_layout_ = std::move(loop_layout);
 
   PostOrderVisit(node, [&](const ObjectRef &obj) {
     if (const auto *call = obj.as<CallNode>()) {
@@ -117,6 +119,29 @@ void AtomicAddVectorizePlanner::UpdateVectorSize(const Array<PrimExpr> &indices,
     return;
 
   const DataType &access_type = buffer->dtype;
+
+  // Respect loop layout replicate/continuity information when provided.
+  if (loop_layout_.defined()) {
+    if (!analyzer_.CanProveEqual(loop_layout_.value()->ReplicateExtent(), 1)) {
+      vector_size_ = 1;
+      max_vector_size = 1;
+      return;
+    }
+  }
+
+  // Respect non-contiguous layouts: if the innermost stride is not provably 1,
+  // avoid vectorizing atomic accesses to prevent issuing vector atomics on
+  // strided addresses.
+  if (!buffer->strides.empty() &&
+      buffer->strides.size() == buffer->shape.size()) {
+    PrimExpr last_stride = buffer->strides.back();
+    if (!analyzer_.CanProveEqual(last_stride, 1)) {
+      vector_size_ = 1;
+      max_vector_size = 1;
+      return;
+    }
+  }
+
   max_vector_size = arith::ZeroAwareGCD(max_vector_size, extent_ptr->value);
 
   auto last_dim = buffer->shape.back();
@@ -296,10 +321,11 @@ private:
   const bool dynamic_;
 };
 
-For VectorizeAtomicAdd(const For &for_node, int compute_capability) {
+For VectorizeAtomicAdd(const For &for_node, int compute_capability,
+                       Optional<Fragment> loop_layout) {
   AtomicAddVectorizePlanResult res = {1, false, 0};
   AtomicAddVectorizePlanner planner;
-  res = planner.Plan(for_node, compute_capability);
+  res = planner.Plan(for_node, compute_capability, std::move(loop_layout));
   auto rewriter = AtomicAddVectorizeRewriter(res);
   return Downcast<For>(rewriter(for_node));
 }

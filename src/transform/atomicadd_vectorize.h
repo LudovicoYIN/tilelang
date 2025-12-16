@@ -25,7 +25,8 @@ namespace tl {
 
 using namespace tir;
 
-For VectorizeAtomicAdd(const For &for_node, int compute_capability);
+For VectorizeAtomicAdd(const For &for_node, int compute_capability,
+                       Optional<Fragment> loop_layout = NullOpt);
 
 struct AtomicAddVectorizePlanResult {
   int vector_size;
@@ -37,7 +38,8 @@ class AtomicAddVectorizePlanner : public arith::IRVisitorWithAnalyzer {
 public:
   AtomicAddVectorizePlanner();
 
-  AtomicAddVectorizePlanResult Plan(const For &node, int compute_capability);
+  AtomicAddVectorizePlanResult Plan(const For &node, int compute_capability,
+                                    Optional<Fragment> loop_layout = NullOpt);
 
 private:
   void VisitStmt_(const ForNode *node) final;
@@ -52,6 +54,7 @@ private:
   int max_vector_size = 1;
   bool dynamic_ = false;
   PrimExpr condition_;
+  Optional<Fragment> loop_layout_;
 };
 
 } // namespace tl

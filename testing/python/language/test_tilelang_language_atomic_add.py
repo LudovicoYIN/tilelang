@@ -361,5 +361,71 @@ def test_tile_atomic_add():
     run_tile_atomic_add(8, 128, 128, 32, 32)
 
 
+@tilelang.jit
+def atomic_add_layout_sensitive_program(N, stride_B):
+    @T.prim_func
+    def atomic_add_layout_sensitive(
+        A: T.StridedTensor[(1, N), (N, 1), "float16"],  # noqa: F821
+        B: T.StridedTensor[(1, N), (N * stride_B, stride_B), "float16"],  # noqa: F821
+    ):
+        with T.Kernel(1, threads=64):
+            for j in T.Parallel(N):
+                T.atomic_add(B[0, j], A[0, j])
+
+    return atomic_add_layout_sensitive
+
+
+def run_atomic_add_layout_sensitive(N, stride_B):
+    kernel = atomic_add_layout_sensitive_program(N, stride_B)
+    import torch
+
+    A = torch.randn(1, N, device="cuda", dtype=torch.float16)
+    base_B = torch.zeros(1, N * stride_B, device="cuda", dtype=torch.float16)
+    B = torch.as_strided(base_B, size=(1, N), stride=(N * stride_B, stride_B))
+
+    kernel(A, B)
+    torch.testing.assert_close(B, A, atol=1e-3, rtol=1e-3)
+    return kernel.get_kernel_source()
+
+
+def test_atomic_add_respects_loop_layout_vectorization():
+    N = 128
+    run_atomic_add_layout_sensitive(N, 1)
+    strided_code = run_atomic_add_layout_sensitive(N, 2)
+
+    vec_in_strided = "AtomicAddx2" in strided_code or "AtomicAddx4" in strided_code
+
+    # Strided layout must not be vectorized; contiguous may or may not depending on arch/dtype.
+    assert not vec_in_strided
+
+
+@tilelang.jit
+def atomic_add_swizzled_layout_program(N):
+    import tilelang.layout as tl_layout
+
+    M = 8
+
+    @T.prim_func
+    def atomic_add_swizzled(
+        A: T.Tensor((M, N), "float16"),
+        B: T.Tensor((M, N), "float16"),
+    ):
+        with T.Kernel(1, threads=128):
+            # Annotate a non-trivial layout (swizzled) on destination to ensure layout
+            # inference propagates a non-contiguous loop layout.
+            T.annotate_layout({B: tl_layout.make_swizzled_layout(B)})
+            for i, j in T.Parallel(M, N):
+                T.atomic_add(B[i, j], A[i, j])
+
+    return atomic_add_swizzled
+
+
+def test_atomic_add_swizzled_layout_not_vectorized():
+    N = 128
+    kernel = atomic_add_swizzled_layout_program(N)
+    code = kernel.get_kernel_source()
+    assert "AtomicAddx2" not in code and "AtomicAddx4" not in code
+
+
 if __name__ == "__main__":
     tilelang.testing.main()

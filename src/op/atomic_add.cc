@@ -535,7 +535,7 @@ Stmt AtomicAddNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
   auto thread_loop =
       PartitionLoop(transformed_loop, T.thread_var, analyzer, loop_layout);
   auto vectorized_thread_loop =
-      VectorizeAtomicAdd(thread_loop, GetArchInt(target));
+      VectorizeAtomicAdd(thread_loop, GetArchInt(target), loop_layout);
   return vectorized_thread_loop;
 }
 
